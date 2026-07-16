@@ -20,6 +20,7 @@ concurrency:
 
 env:
   PREFIX: mp-
+  DISPLAY_PREFIX: MP
   OUTPUT_BRANCH: prefixed
   UPSTREAM_REPO: mattpocock/skills
 
@@ -34,7 +35,7 @@ jobs:
     steps:
 
       #
-      # 获取自己的 Fork
+      # Checkout 当前 Fork
       #
       - name: Checkout repository
 
@@ -45,7 +46,7 @@ jobs:
 
 
       #
-      # 拉取上游最新 skills
+      # 拉取上游最新版本
       #
       - name: Clone upstream repository
 
@@ -57,7 +58,7 @@ jobs:
 
 
       #
-      # 删除上游 GitHub Actions
+      # 删除上游 Actions
       #
       # 防止同步 changesets/release workflow
       #
@@ -68,7 +69,7 @@ jobs:
 
 
       #
-      # 添加 mp- 前缀
+      # 修改 skill 名称和目录
       #
       - name: Prefix skills
 
@@ -79,26 +80,55 @@ jobs:
 
 
       #
-      # 清理 git 信息
+      # 修改 plugin display_name
       #
-      - name: Prepare generated repository
+      - name: Prefix plugin metadata
 
         run: |
-          rm -rf /tmp/upstream/.git
+
+          if [ -f /tmp/upstream/.claude-plugin/plugin.json ]; then
+
+            python3 scripts/prefix-plugin.py \
+              /tmp/upstream/.claude-plugin/plugin.json \
+              ${DISPLAY_PREFIX}
+
+          else
+
+            echo "plugin.json not found, skip"
+
+          fi
 
 
       #
-      # 发布 prefixed 分支
+      # 删除无关内容
       #
-      - name: Push generated branch
-
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # 保留：
+      #   skills
+      #   .claude-plugin
+      #
+      - name: Cleanup repository
 
         run: |
 
           cd /tmp/upstream
 
+
+          rm -rf \
+            .changeset \
+            docs \
+            .github
+
+
+      #
+      # 初始化生成仓库
+      #
+      - name: Prepare generated branch
+
+        run: |
+
+          cd /tmp/upstream
+
+          rm -rf .git
 
           git init
 
@@ -117,6 +147,19 @@ jobs:
 
           git commit \
             -m "chore: sync prefixed skills"
+
+
+      #
+      # 推送 prefixed 分支
+      #
+      - name: Push prefixed branch
+
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+        run: |
+
+          cd /tmp/upstream
 
 
           git remote add origin \
