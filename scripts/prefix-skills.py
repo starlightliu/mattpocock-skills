@@ -7,71 +7,232 @@ import sys
 from pathlib import Path
 
 
-NAME_PATTERN = re.compile(r"(?m)^name:\s*(.+?)\s*$")
+NAME_PATTERN = re.compile(
+    r"(?m)^name:\s*([^\n]+)"
+)
+
+DISPLAY_NAME_PATTERN = re.compile(
+    r'(?m)^(\s*display_name:\s*["\']?)(.+?)(["\']?\s*)$'
+)
 
 
-def prefix_skill(skill_file: Path, prefix: str) -> None:
-    text = skill_file.read_text(encoding="utf-8")
+def add_name_prefix(name: str, prefix: str) -> str:
+    """
+    Add prefix to skill name.
 
-    if not text.startswith("---"):
-        raise ValueError(f"Missing YAML frontmatter: {skill_file}")
+    example:
+      ask-matt -> mp-ask-matt
+      mp-ask-matt -> mp-ask-matt
+    """
 
-    closing = text.find("\n---", 3)
+    if name.startswith(prefix):
+        return name
 
-    if closing == -1:
-        raise ValueError(f"Invalid YAML frontmatter: {skill_file}")
+    return f"{prefix}{name}"
 
-    frontmatter = text[:closing]
-    body = text[closing:]
 
-    match = NAME_PATTERN.search(frontmatter)
+def add_display_prefix(display_name: str, prefix: str) -> str:
+    """
+    Add display prefix.
 
-    if not match:
-        raise ValueError(f"Missing name field: {skill_file}")
+    example:
+      Ask Matt -> MP Ask Matt
+      MP Ask Matt -> MP Ask Matt
+    """
 
-    old_name = match.group(1).strip().strip("\"'")
-    new_name = old_name if old_name.startswith(prefix) else f"{prefix}{old_name}"
+    display_prefix = prefix.rstrip("-").upper()
 
-    if new_name != old_name:
-        frontmatter = (
-            frontmatter[: match.start()]
-            + f"name: {new_name}"
-            + frontmatter[match.end() :]
+    if display_name.startswith(display_prefix + " "):
+        return display_name
+
+    return f"{display_prefix} {display_name}"
+
+
+def update_skill_metadata(
+    skill_file: Path,
+    prefix: str,
+) -> str:
+
+    text = skill_file.read_text(
+        encoding="utf-8"
+    )
+
+    old_text = text
+
+    #
+    # update name:
+    #
+    # name: ask-matt
+    #
+    name_match = NAME_PATTERN.search(text)
+
+    old_name = None
+    new_name = None
+
+    if name_match:
+
+        old_name = (
+            name_match.group(1)
+            .strip()
+            .strip('"\'')
         )
 
-        skill_file.write_text(frontmatter + body, encoding="utf-8")
+        new_name = add_name_prefix(
+            old_name,
+            prefix
+        )
+
+        if old_name != new_name:
+
+            text = (
+                text[:name_match.start(1)]
+                + new_name
+                + text[name_match.end(1):]
+            )
+
+
+    #
+    # update display_name:
+    #
+    # display_name: "Ask Matt"
+    #
+    display_match = DISPLAY_NAME_PATTERN.search(text)
+
+    if display_match:
+
+        old_display = (
+            display_match.group(2)
+            .strip()
+        )
+
+        new_display = add_display_prefix(
+            old_display,
+            prefix
+        )
+
+        if old_display != new_display:
+
+            text = (
+                text[:display_match.start(2)]
+                + new_display
+                + text[display_match.end(2):]
+            )
+
+
+    if text != old_text:
+
+        skill_file.write_text(
+            text,
+            encoding="utf-8"
+        )
+
+
+    return new_name or old_name or skill_file.parent.name
+
+
+def rename_skill_directory(
+    skill_file: Path,
+    prefix: str,
+):
 
     skill_dir = skill_file.parent
 
-    if skill_dir.name.startswith(prefix):
+    old_dir_name = skill_dir.name
+
+    if old_dir_name.startswith(prefix):
         return
 
-    target_dir = skill_dir.with_name(f"{prefix}{skill_dir.name}")
+    new_dir_name = f"{prefix}{old_dir_name}"
 
-    if target_dir.exists():
-        raise FileExistsError(f"Target already exists: {target_dir}")
+    target = skill_dir.parent / new_dir_name
 
-    skill_dir.rename(target_dir)
+    if target.exists():
+        raise FileExistsError(
+            f"Target directory exists: {target}"
+        )
 
-    print(f"{old_name} -> {new_name}")
+    skill_dir.rename(target)
+
+    print(
+        f"rename: {old_dir_name} -> {new_dir_name}"
+    )
 
 
-def main() -> None:
+def process_skill(
+    skill_file: Path,
+    prefix: str,
+):
+
+    name = update_skill_metadata(
+        skill_file,
+        prefix
+    )
+
+    rename_skill_directory(
+        skill_file,
+        prefix
+    )
+
+    print(
+        f"processed: {name}"
+    )
+
+
+def main():
+
     if len(sys.argv) != 3:
-        print("Usage: prefix-skills.py <root> <prefix>", file=sys.stderr)
-        raise SystemExit(1)
 
-    root = Path(sys.argv[1]).resolve()
+        print(
+            "Usage: prefix-skills.py <skills-root> <prefix>",
+            file=sys.stderr
+        )
+
+        sys.exit(1)
+
+
+    root = Path(
+        sys.argv[1]
+    ).resolve()
+
     prefix = sys.argv[2]
 
-    skill_files = list(root.rglob("SKILL.md"))
 
-    # 优先处理更深层目录，避免父目录提前重命名
-    skill_files.sort(key=lambda path: len(path.parts), reverse=True)
+    if not prefix.endswith("-"):
+        prefix += "-"
+
+
+    skill_files = list(
+        root.rglob("SKILL.md")
+    )
+
+
+    #
+    # 先处理深层目录
+    # 避免父目录 rename 后路径失效
+    #
+    skill_files.sort(
+        key=lambda x: len(x.parts),
+        reverse=True
+    )
+
 
     for skill_file in skill_files:
-        if skill_file.exists():
-            prefix_skill(skill_file, prefix)
+
+        try:
+
+            process_skill(
+                skill_file,
+                prefix
+            )
+
+        except Exception as e:
+
+            print(
+                f"ERROR: {skill_file}: {e}",
+                file=sys.stderr
+            )
+
+            raise
 
 
 if __name__ == "__main__":
