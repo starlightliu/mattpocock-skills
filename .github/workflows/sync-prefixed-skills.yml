@@ -88,27 +88,52 @@ jobs:
       # 验证转换结果
       #
       - name: Verify generated skills
-
         run: |
-
-          echo "===== Skills ====="
-
-          find /tmp/upstream/skills \
-            -maxdepth 2 \
-            -name SKILL.md \
-            | head -50
-
-
-          echo
-
-          echo "===== Display names ====="
-
-
-          find /tmp/upstream \
-            -name "*.json" \
-            -print0 \
-          | xargs -0 grep -n "display_name" \
-          || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+      
+          root = Path("/tmp/upstream/skills")
+          files = sorted(root.rglob("agents/openai.yaml"))
+      
+          if not files:
+              raise SystemExit("No agents/openai.yaml files found")
+      
+          invalid = []
+      
+          for file in files:
+              text = file.read_text(encoding="utf-8")
+      
+              match = re.search(
+                  r'(?m)^\s*display_name:\s*["\']?([^"\']+)',
+                  text,
+              )
+      
+              if not match:
+                  invalid.append(f"{file}: display_name missing")
+                  continue
+      
+              display_name = match.group(1).strip()
+      
+              print(f"{file}: {display_name}")
+      
+              if not display_name.startswith("MP "):
+                  invalid.append(
+                      f"{file}: invalid display_name: {display_name}"
+                  )
+      
+          if invalid:
+              print()
+              print("Verification failed:")
+      
+              for item in invalid:
+                  print(item)
+      
+              raise SystemExit(1)
+      
+          print()
+          print(f"Verified {len(files)} display names")
+          PY
 
 
       #
