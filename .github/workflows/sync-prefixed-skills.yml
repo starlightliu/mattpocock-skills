@@ -1,0 +1,60 @@
+name: Sync prefixed skills
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每天 UTC 02:17 执行
+    # 上海、新加坡时间为 10:17
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-prefixed-skills
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout automation branch
+        uses: actions/checkout@v4
+
+      - name: Clone upstream repository
+        run: |
+          git clone \
+            --depth=1 \
+            https://github.com/mattpocock/skills.git \
+            /tmp/upstream
+
+      - name: Add mp prefix
+        run: |
+          python3 scripts/prefix-skills.py /tmp/upstream mp-
+
+      - name: Remove upstream automation
+        run: |
+          rm -rf /tmp/upstream/.git
+          rm -rf /tmp/upstream/.github/workflows
+
+      - name: Publish generated branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /tmp/upstream
+
+          git init
+          git checkout -b prefixed
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .
+          git commit -m "chore: sync upstream skills with mp prefix"
+
+          git remote add origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          git push --force origin prefixed
