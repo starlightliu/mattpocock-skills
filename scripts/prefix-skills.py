@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
-NAME_PATTERN = re.compile(
-    r"(?m)^name:\s*([^\n]+)"
-)
-
-
-DISPLAY_NAME_PATTERN = re.compile(
-    r'("display_name"\s*:\s*")([^"]+)(")'
-)
-
-
 def normalize_prefix(prefix: str) -> str:
+    prefix = prefix.strip()
+
+    if not prefix:
+        raise ValueError("Prefix cannot be empty")
 
     if not prefix.endswith("-"):
         prefix += "-"
@@ -26,339 +20,307 @@ def normalize_prefix(prefix: str) -> str:
     return prefix
 
 
-def prefix_name(
-    name: str,
-    prefix: str
-) -> str:
+def get_display_prefix(prefix: str) -> str:
+    return prefix.rstrip("-").upper()
 
+
+def prefix_skill_name(name: str, prefix: str) -> str:
     if name.startswith(prefix):
         return name
 
     return f"{prefix}{name}"
 
 
-def prefix_display_name(
-    name: str,
-    prefix: str
-) -> str:
+def prefix_display_name(name: str, prefix: str) -> str:
+    display_prefix = get_display_prefix(prefix)
 
-    display_prefix = (
-        prefix
-        .rstrip("-")
-        .upper()
-    )
+    if name == display_prefix:
+        return name
 
-    if name.startswith(display_prefix + " "):
+    if name.startswith(f"{display_prefix} "):
         return name
 
     return f"{display_prefix} {name}"
 
 
-#
-# -----------------------------
-# SKILL.md 处理
-# -----------------------------
-#
+def replace_yaml_scalar(
+    text: str,
+    key: str,
+    transform: Callable[[str], str],
+    *,
+    count: int = 0,
+) -> tuple[str, int]:
+    """
+    Replace a simple YAML scalar while preserving indentation and quotes.
+
+    Examples:
+
+        name: ask-matt
+        name: "ask-matt"
+        display_name: "Ask Matt"
+    """
+
+    pattern = re.compile(
+        rf"^(?P<head>[ \t]*{re.escape(key)}:[ \t]*)"
+        rf"(?P<value>[^\r\n]*)"
+        rf"(?P<newline>\r?\n?)$",
+        re.MULTILINE,
+    )
+
+    replacements = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal replacements
+
+        raw_value = match.group("value")
+
+        value_without_trailing_space = raw_value.rstrip(" \t")
+        trailing_space = raw_value[len(value_without_trailing_space) :]
+
+        scalar = value_without_trailing_space.strip()
+
+        if not scalar:
+            return match.group(0)
+
+        quote = ""
+        value = scalar
+
+        if (
+            len(scalar) >= 2
+            and scalar[0] in {'"', "'"}
+            and scalar[-1] == scalar[0]
+        ):
+            quote = scalar[0]
+            value = scalar[1:-1]
+
+        new_value = transform(value)
+
+        if new_value == value:
+            return match.group(0)
+
+        replacements += 1
+
+        if quote:
+            rendered_value = f"{quote}{new_value}{quote}"
+        else:
+            rendered_value = new_value
+
+        return (
+            f"{match.group('head')}"
+            f"{rendered_value}"
+            f"{trailing_space}"
+            f"{match.group('newline')}"
+        )
+
+    updated_text = pattern.sub(
+        replace,
+        text,
+        count=count,
+    )
+
+    return updated_text, replacements
+
 
 def update_skill_md(
     skill_file: Path,
-    prefix: str
-) -> str | None:
+    prefix: str,
+) -> None:
+    text = skill_file.read_text(encoding="utf-8")
 
-
-    text = skill_file.read_text(
-        encoding="utf-8"
+    updated_text, replacements = replace_yaml_scalar(
+        text,
+        "name",
+        lambda value: prefix_skill_name(value, prefix),
+        count=1,
     )
 
-    old_text = text
-
-
-    skill_name = None
-
-
-    match = NAME_PATTERN.search(text)
-
-
-    if match:
-
-        old_name = (
-            match.group(1)
-            .strip()
-            .strip("\"'")
+    if replacements == 0:
+        current_name_pattern = re.compile(
+            rf"(?m)^[ \t]*name:[ \t]*"
+            rf'["\']?{re.escape(prefix)}'
         )
 
-        new_name = prefix_name(
-            old_name,
-            prefix
-        )
-
-        skill_name = new_name
-
-
-        if old_name != new_name:
-
-            text = (
-                text[:match.start(1)]
-                + new_name
-                + text[match.end(1):]
+        if not current_name_pattern.search(text):
+            raise ValueError(
+                f"Could not update name in {skill_file}"
             )
-
-
-    if text != old_text:
-
-        skill_file.write_text(
-            text,
-            encoding="utf-8"
-        )
-
-
-    return skill_name
-
-
-
-#
-# -----------------------------
-# plugin.json / json metadata
-# -----------------------------
-#
-
-def update_json_metadata(
-    json_file: Path,
-    prefix: str
-):
-
-    try:
-
-        data = json.loads(
-            json_file.read_text(
-                encoding="utf-8"
-            )
-        )
-
-    except Exception:
 
         return
 
+    skill_file.write_text(
+        updated_text,
+        encoding="utf-8",
+    )
 
-    changed = False
-
-
-    def walk(obj):
-
-        nonlocal changed
-
-
-        if isinstance(obj, dict):
-
-            for key, value in obj.items():
-
-                if key == "display_name" and isinstance(value, str):
-
-                    new_value = prefix_display_name(
-                        value,
-                        prefix
-                    )
-
-                    if new_value != value:
-
-                        obj[key] = new_value
-                        changed = True
+    print(f"updated skill name: {skill_file}")
 
 
-                else:
+def update_openai_yaml(
+    metadata_file: Path,
+    prefix: str,
+) -> None:
+    text = metadata_file.read_text(encoding="utf-8")
 
-                    walk(value)
+    updated_text, replacements = replace_yaml_scalar(
+        text,
+        "display_name",
+        lambda value: prefix_display_name(value, prefix),
+        count=1,
+    )
 
+    if replacements == 0:
+        display_prefix = get_display_prefix(prefix)
 
-        elif isinstance(obj, list):
+        prefixed_pattern = re.compile(
+            rf"(?m)^[ \t]*display_name:[ \t]*"
+            rf'["\']?{re.escape(display_prefix)}(?:[ \t]|["\']?$)'
+        )
 
-            for item in obj:
-
-                walk(item)
-
-
-    walk(data)
-
-
-    if changed:
-
-        json_file.write_text(
-            json.dumps(
-                data,
-                indent=2,
-                ensure_ascii=False
+        if not prefixed_pattern.search(text):
+            raise ValueError(
+                f"Could not update display_name in {metadata_file}"
             )
-            + "\n",
-            encoding="utf-8"
-        )
 
-        print(
-            f"updated metadata: {json_file}"
-        )
+        return
 
+    metadata_file.write_text(
+        updated_text,
+        encoding="utf-8",
+    )
 
+    print(f"updated display name: {metadata_file}")
 
-#
-# -----------------------------
-# directory rename
-# -----------------------------
-#
 
 def collect_directory_rename(
-    skill_file: Path,
-    prefix: str
-):
-
-    skill_dir = skill_file.parent
-
-
+    skill_dir: Path,
+    prefix: str,
+) -> tuple[Path, Path] | None:
     old_name = skill_dir.name
 
-
     if old_name.startswith(prefix):
-
         return None
 
-
-    new_name = f"{prefix}{old_name}"
-
-
-    return (
-        skill_dir,
-        skill_dir.parent / new_name
+    target_dir = skill_dir.with_name(
+        f"{prefix}{old_name}"
     )
 
+    return skill_dir, target_dir
 
 
-def apply_directory_rename(
-    rename_pairs
-):
+def apply_directory_renames(
+    rename_pairs: list[tuple[Path, Path]],
+) -> None:
+    unique_pairs = {
+        old_dir: new_dir
+        for old_dir, new_dir in rename_pairs
+    }
 
-    #
-    # 深层目录优先
-    #
-    rename_pairs.sort(
-        key=lambda x: len(x[0].parts),
-        reverse=True
+    ordered_pairs = sorted(
+        unique_pairs.items(),
+        key=lambda pair: len(pair[0].parts),
+        reverse=True,
     )
 
-
-    for old, new in rename_pairs:
-
-
-        if not old.exists():
-
-            continue
-
-
-        if new.exists():
-
-            raise RuntimeError(
-                f"Target exists: {new}"
+    for old_dir, new_dir in ordered_pairs:
+        if not old_dir.exists():
+            raise FileNotFoundError(
+                f"Source directory does not exist: {old_dir}"
             )
 
+        if new_dir.exists():
+            raise FileExistsError(
+                f"Target directory already exists: {new_dir}"
+            )
 
-        old.rename(new)
-
+        old_dir.rename(new_dir)
 
         print(
-            f"rename: {old.name} -> {new.name}"
+            f"renamed directory: "
+            f"{old_dir.name} -> {new_dir.name}"
         )
 
 
+def resolve_skills_root(root: Path) -> Path:
+    repository_skills_root = root / "skills"
 
-#
-# -----------------------------
-# main
-# -----------------------------
-#
+    if repository_skills_root.is_dir():
+        return repository_skills_root
 
-def main():
+    if root.name == "skills" and root.is_dir():
+        return root
 
+    raise FileNotFoundError(
+        f"Skills directory not found under {root}"
+    )
+
+
+def main() -> None:
     if len(sys.argv) != 3:
-
         print(
             "Usage: prefix-skills.py <repo-root> <prefix>",
-            file=sys.stderr
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    root = Path(sys.argv[1]).resolve()
+    prefix = normalize_prefix(sys.argv[2])
+
+    if not root.is_dir():
+        raise NotADirectoryError(
+            f"Repository root does not exist: {root}"
         )
 
-        sys.exit(1)
+    skills_root = resolve_skills_root(root)
 
-
-
-    root = Path(
-        sys.argv[1]
-    ).resolve()
-
-
-    prefix = normalize_prefix(
-        sys.argv[2]
+    skill_files = sorted(
+        skills_root.rglob("SKILL.md")
     )
 
+    if not skill_files:
+        raise FileNotFoundError(
+            f"No SKILL.md files found under {skills_root}"
+        )
 
-    #
-    # 1. 修改所有 SKILL.md
-    #
-    skill_files = list(
-        root.rglob("SKILL.md")
-    )
-
-
-    rename_pairs = []
-
+    rename_pairs: list[tuple[Path, Path]] = []
+    metadata_count = 0
 
     for skill_file in skill_files:
-
-
-        print(
-            f"process skill: {skill_file}"
-        )
-
+        skill_dir = skill_file.parent
 
         update_skill_md(
             skill_file,
-            prefix
+            prefix,
         )
 
-
-        pair = collect_directory_rename(
-            skill_file,
-            prefix
+        metadata_file = (
+            skill_dir
+            / "agents"
+            / "openai.yaml"
         )
 
+        if metadata_file.is_file():
+            update_openai_yaml(
+                metadata_file,
+                prefix,
+            )
 
-        if pair:
+            metadata_count += 1
 
-            rename_pairs.append(pair)
-
-
-
-    #
-    # 2. 修改所有 JSON metadata
-    #
-    json_files = list(
-        root.rglob("*.json")
-    )
-
-
-    for json_file in json_files:
-
-        update_json_metadata(
-            json_file,
-            prefix
+        rename_pair = collect_directory_rename(
+            skill_dir,
+            prefix,
         )
 
+        if rename_pair is not None:
+            rename_pairs.append(rename_pair)
 
+    apply_directory_renames(rename_pairs)
 
-    #
-    # 3. 最后统一 rename
-    #
-    apply_directory_rename(
-        rename_pairs
-    )
-
+    print()
+    print(f"processed skills: {len(skill_files)}")
+    print(f"processed openai metadata: {metadata_count}")
+    print(f"directory renames: {len(rename_pairs)}")
 
 
 if __name__ == "__main__":
-
     main()
