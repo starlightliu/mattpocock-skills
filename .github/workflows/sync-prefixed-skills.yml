@@ -20,7 +20,6 @@ concurrency:
 
 env:
   PREFIX: mp-
-  DISPLAY_PREFIX: MP
   OUTPUT_BRANCH: prefixed
   UPSTREAM_REPO: mattpocock/skills
 
@@ -60,7 +59,7 @@ jobs:
       #
       # 删除上游 Actions
       #
-      # 防止同步 changesets/release workflow
+      # 避免同步 changesets/release workflow
       #
       - name: Remove upstream workflows
 
@@ -69,42 +68,55 @@ jobs:
 
 
       #
-      # 修改 skill 名称和目录
+      # 添加 mp 前缀
+      #
+      # 处理：
+      # - skills/*/SKILL.md
+      # - name
+      # - skill directory
+      # - display_name
       #
       - name: Prefix skills
 
         run: |
           python3 scripts/prefix-skills.py \
-            /tmp/upstream/skills \
+            /tmp/upstream \
             ${PREFIX}
 
 
       #
-      # 修改 plugin display_name
+      # 验证转换结果
       #
-      - name: Prefix plugin metadata
+      - name: Verify generated skills
 
         run: |
 
-          if [ -f /tmp/upstream/.claude-plugin/plugin.json ]; then
+          echo "===== Skills ====="
 
-            python3 scripts/prefix-plugin.py \
-              /tmp/upstream/.claude-plugin/plugin.json \
-              ${DISPLAY_PREFIX}
+          find /tmp/upstream/skills \
+            -maxdepth 2 \
+            -name SKILL.md \
+            | head -50
 
-          else
 
-            echo "plugin.json not found, skip"
+          echo
 
-          fi
+          echo "===== Display names ====="
+
+
+          find /tmp/upstream \
+            -name "*.json" \
+            -print0 \
+          | xargs -0 grep -n "display_name" \
+          || true
 
 
       #
-      # 删除无关内容
+      # 清理无关文件
       #
       # 保留：
-      #   skills
-      #   .claude-plugin
+      # - skills
+      # - .claude-plugin
       #
       - name: Cleanup repository
 
@@ -116,11 +128,13 @@ jobs:
           rm -rf \
             .changeset \
             docs \
-            .github
+            .github \
+            examples \
+            tests
 
 
       #
-      # 初始化生成仓库
+      # 初始化生成分支
       #
       - name: Prepare generated branch
 
@@ -128,15 +142,19 @@ jobs:
 
           cd /tmp/upstream
 
+
           rm -rf .git
 
+
           git init
+
 
           git checkout -b ${OUTPUT_BRANCH}
 
 
           git config user.name \
             "github-actions[bot]"
+
 
           git config user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
@@ -149,8 +167,9 @@ jobs:
             -m "chore: sync prefixed skills"
 
 
+
       #
-      # 推送 prefixed 分支
+      # 强制更新 prefixed 分支
       #
       - name: Push prefixed branch
 
