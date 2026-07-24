@@ -1,0 +1,3 @@
+interface:
+  display_name: "MP Request Refactor Plan"
+  short_description: "Plan a safe incremental refactor"
