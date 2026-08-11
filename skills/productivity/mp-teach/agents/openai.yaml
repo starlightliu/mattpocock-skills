@@ -1,0 +1,5 @@
+interface:
+  display_name: "MP Teach"
+  short_description: "Learn a concept in a guided workspace"
+policy:
+  allow_implicit_invocation: false
