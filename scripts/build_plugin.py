@@ -10,6 +10,12 @@ PLUGIN_ROOT = Path("plugins/mattpocock-skills")
 TARGET = PLUGIN_ROOT / "skills"
 PREFIX = "mp-"
 
+# 不发布这些分类
+EXCLUDED_CATEGORIES = {
+    "deprecated",
+    "in-progress",
+}
+
 
 def run(*args):
     return subprocess.run(
@@ -37,7 +43,6 @@ with tempfile.TemporaryDirectory() as tmp:
     if not source.exists():
         raise RuntimeError(f"Skills directory not found: {source}")
 
-    # 获取 upstream commit，方便追踪
     commit = run(
         "git",
         "-C",
@@ -48,7 +53,6 @@ with tempfile.TemporaryDirectory() as tmp:
 
     print(f"Upstream commit: {commit}")
 
-    # 每次全量重新生成
     if TARGET.exists():
         shutil.rmtree(TARGET)
 
@@ -56,20 +60,34 @@ with tempfile.TemporaryDirectory() as tmp:
 
     count = 0
 
-    for skill_dir in sorted(source.iterdir()):
-        if not skill_dir.is_dir():
-            continue
+    # 递归查找所有 SKILL.md
+    skill_files = sorted(source.rglob("SKILL.md"))
 
-        skill_md = skill_dir / "SKILL.md"
+    print(f"Found {len(skill_files)} SKILL.md files.")
 
-        if not skill_md.exists():
-            print(f"Skip {skill_dir.name}: SKILL.md not found")
+    for skill_md in skill_files:
+        skill_dir = skill_md.parent
+
+        relative = skill_dir.relative_to(source)
+
+        # 第一层目录作为 category
+        category = relative.parts[0] if len(relative.parts) > 1 else None
+
+        if category in EXCLUDED_CATEGORIES:
+            print(f"Skip {relative}: excluded category")
             continue
 
         original_name = skill_dir.name
         target_name = f"{PREFIX}{original_name}"
 
         target_dir = TARGET / target_name
+
+        # 防止不同分类出现同名 skill
+        if target_dir.exists():
+            raise RuntimeError(
+                f"Duplicate skill name detected: {original_name}\n"
+                f"Source: {relative}"
+            )
 
         shutil.copytree(
             skill_dir,
@@ -78,9 +96,10 @@ with tempfile.TemporaryDirectory() as tmp:
         )
 
         target_skill_md = target_dir / "SKILL.md"
+
         content = target_skill_md.read_text(encoding="utf-8")
 
-        # 只修改 frontmatter 中第一个 name 字段
+        # 只修改 frontmatter 中第一个 name
         new_content, replacements = re.subn(
             r"(?m)^name:\s*(.+)$",
             f"name: {target_name}",
@@ -90,7 +109,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
         if replacements != 1:
             raise RuntimeError(
-                f"Could not update skill name: {target_skill_md}"
+                f"Could not update skill name: {skill_md}"
             )
 
         target_skill_md.write_text(
@@ -98,10 +117,12 @@ with tempfile.TemporaryDirectory() as tmp:
             encoding="utf-8",
         )
 
-        print(f"{original_name} -> {target_name}")
+        print(
+            f"{relative} -> {target_name}"
+        )
+
         count += 1
 
-    # 保存 upstream 版本
     (PLUGIN_ROOT / "UPSTREAM").write_text(
         "\n".join(
             [
@@ -116,3 +137,8 @@ with tempfile.TemporaryDirectory() as tmp:
 
     print()
     print(f"Generated {count} skills.")
+
+    if count == 0:
+        raise RuntimeError(
+            "No skills generated. Upstream structure may have changed."
+        )
