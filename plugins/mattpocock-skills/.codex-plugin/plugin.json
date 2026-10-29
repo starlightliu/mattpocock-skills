@@ -1,6 +1,6 @@
 {
   "name": "mattpocock-skills",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "description": "Matt Pocock skills packaged for Codex with mp- prefixed skill names.",
   "skills": "./skills/"
 }
